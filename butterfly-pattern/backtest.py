@@ -1,54 +1,83 @@
 import os
 import pandas as pd
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from sqlalchemy import create_engine
 
 load_dotenv()
 
-# --- Hàm đọc data từ folder binance_data ---
-def get_binance_data(symbol, interval, start_date, end_date):
+# --- Cấu hình kết nối Database ---
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_NAME = os.getenv("DB_NAME")
+
+DATABASE_URL = (
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
+
+try:
+    print(f"🔗 Kết nối DB: {DB_HOST}:{DB_PORT}/{DB_NAME}")
+    engine = create_engine(DATABASE_URL)
+    print("✅ Kết nối DB thành công")
+except Exception as e:
+    engine = None
+    print(f"❌ Không tạo được kết nối DB: {e}")
+
+# --- Hàm đọc data từ Database ---
+def get_binance_data(symbol, interval):
     """
-    Đọc data từ folder binance_data
-    Args:
-        symbol: BTCUSDT, ETHUSDT, etc.
-        interval: 1h, 2h, 4h, 1d, etc.
-        start_date: '2025-05-01'
-        end_date: '2025-06-30'
+
     """
-    # Tạo tên file theo format: binance_data/BTCUSDT_2h.csv
-    filename = f"/home/anhoang/trade-bot/back-test/binance_data/{symbol}_{interval}.csv"
-    
-    try:
-        # Đọc file CSV
-        df = pd.read_csv(filename)
-        
-        # Chuyển đổi cột timestamp thành datetime
-        df['datetime'] = pd.to_datetime(df['timestamp'])
-        
-        # Lọc theo khoảng thời gian
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        
-        df = df[(df['datetime'] >= start_dt) & (df['datetime'] <= end_dt)]
-        
-        # Sắp xếp theo thời gian
-        df = df.sort_values('datetime').reset_index(drop=True)
-        
-        print(f"Đã đọc data từ {filename}")
-        print(f"Tổng số candles: {len(df)}")
-        print(f"Thời gian: {df['datetime'].min()} đến {df['datetime'].max()}")
-        
-        return df
-        
-    except FileNotFoundError:
-        print(f"Không tìm thấy file: {filename}")
-        print("Vui lòng đảm bảo file tồn tại trong folder binance_data/")
-        print("Format tên file: {symbol}_{interval}.csv")
-        print("Cấu trúc file cần có các cột: timestamp,open,high,low,close,volume")
+    print(f"📊 Lấy dữ liệu từ DB: {symbol} {interval}")
+    if engine is None:
+        print("❌ Chưa có kết nối DB hợp lệ.")
         return pd.DataFrame()
+
+    table_name =  "proddb.coin_prices_1h"
+
+    query = f"""
+        SELECT *
+        FROM {table_name}
+        WHERE symbol = %(symbol)s
+          AND open_time >= EXTRACT(EPOCH FROM NOW()) - 90*24*3600 
+          AND open_time <= EXTRACT(EPOCH FROM NOW())
+        ORDER BY open_time ASC
+    """
+
+    try:
+        print(f"🔍 Query {table_name}")
+        df = pd.read_sql(
+            query,
+            con=engine,
+            params={
+                "symbol": symbol,
+            },
+        )
+
+        if 'open_time' not in df.columns:
+            print("❌ Thiếu cột 'open_time' trong dữ liệu trả về từ DB.")
+            print(f"   Columns: {list(df.columns)}")
+            return pd.DataFrame()
+
+        required_cols = {'open', 'high', 'low', 'close'}
+        if not required_cols.issubset(df.columns):
+            print(f"❌ Thiếu cột cần thiết: {required_cols - set(df.columns)}")
+            return pd.DataFrame()
+
+        df['datetime'] = pd.to_datetime(df['open_time'], unit='s')
+        df = df.sort_values('datetime').reset_index(drop=True)
+
+        print(f"✅ Đã đọc {len(df)} dòng từ DB bảng {table_name}")
+        if len(df) > 0:
+            print(f"   Thời gian: {df['datetime'].min()} đến {df['datetime'].max()}")
+            print(f"   Giá cuối: ${df.iloc[-1]['close']:.4f}")
+
+        return df
     except Exception as e:
-        print(f"Lỗi khi đọc file: {e}")
+        print(f"❌ Lỗi khi đọc dữ liệu từ DB: {e}")
         return pd.DataFrame()
 
 # --- Argument Parser ---
@@ -56,8 +85,6 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Butterfly Pattern Backtest')
     parser.add_argument('symbol', help='Symbol (e.g., BTCUSDT, ETHUSDT)')
     parser.add_argument('timeframe', help='Timeframe (e.g., 1h, 2h, 4h, 1d)')
-    parser.add_argument('--start-date', default='2025-04-01', help='Start date (YYYY-MM-DD)')
-    parser.add_argument('--end-date', default='2025-06-30', help='End date (YYYY-MM-DD)')
     parser.add_argument('--initial-balance', type=float, default=1000, help='Initial balance')
     parser.add_argument('--trade-amount', type=float, default=100, help='Trade amount per signal')
     parser.add_argument('--exit-periods-1', type=int, default=9, help='Exit periods for strategy 1')
@@ -71,8 +98,6 @@ args = parse_arguments()
 
 SYMBOL = args.symbol.upper()
 TIMEFRAME = args.timeframe
-START_DATE = args.start_date
-END_DATE = args.end_date
 INITIAL_BALANCE = args.initial_balance
 TRADE_AMOUNT = args.trade_amount
 EXIT_PERIODS_1 = args.exit_periods_1
@@ -82,7 +107,6 @@ TAKE_PROFIT_PERCENT = args.take_profit
 print(f"=== BUTTERFLY PATTERN BACKTEST ===")
 print(f"Symbol: {SYMBOL}")
 print(f"Timeframe: {TIMEFRAME}")
-print(f"Period: {START_DATE} to {END_DATE}")
 print(f"Initial Balance: ${INITIAL_BALANCE}")
 print(f"Trade Amount: ${TRADE_AMOUNT}")
 print(f"Exit Strategy 1: {EXIT_PERIODS_1} periods")
@@ -91,7 +115,7 @@ print(f"Take Profit: {TAKE_PROFIT_PERCENT}%")
 print("=" * 40)
 
 # --- Đọc data từ folder binance_data ---
-df = get_binance_data(SYMBOL, TIMEFRAME, START_DATE, END_DATE)
+df = get_binance_data(SYMBOL, TIMEFRAME)
 
 if len(df) == 0:
     print("Không có dữ liệu để backtest!")
@@ -396,7 +420,6 @@ def calculate_backtest_results(df, signals, exit_periods, initial_balance=INITIA
                     balance -= position_value
                     break  # Chỉ enter 1 position đầu tiên tìm thấy
     
-    # Close any remaining positions at the end
     if positions:
         final_close = df.iloc[-1]['close']
         final_date = df.iloc[-1]['datetime']
@@ -411,7 +434,7 @@ def calculate_backtest_results(df, signals, exit_periods, initial_balance=INITIA
             
             bars_held = len(df) - 1 - position['entry_index']
             results.append({
-                'type': position['type'],
+                'type': position['type'],   # LONG or SHORT
                 'pattern_type': position['pattern_type'],
                 'entry_time': position['entry_time'],
                 'entry_price': position['entry_price'],
@@ -430,9 +453,7 @@ def calculate_backtest_results(df, signals, exit_periods, initial_balance=INITIA
 def export_butterfly_comparison_report(signals, results_9, results_26, final_balance_9, final_balance_26, filename=None):
     if filename is None:
         # Format ngày: YYYYMMDD
-        start_date_formatted = START_DATE.replace('-', '')
-        end_date_formatted = END_DATE.replace('-', '')
-        filename = f"butterfly_pattern_{SYMBOL.lower()}_{TIMEFRAME}_{start_date_formatted}_{end_date_formatted}.md"
+        filename = f"butterfly_pattern_{SYMBOL.lower()}_{TIMEFRAME}.md"
     
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(f"# Butterfly Pattern Strategy Comparison - {SYMBOL} {TIMEFRAME}\n\n")
@@ -526,18 +547,14 @@ def export_butterfly_comparison_report(signals, results_9, results_26, final_bal
 
 # --- Chạy backtest ---
 if __name__ == "__main__":
-    # Sử dụng cách 2: không cần pivot_highs, pivot_lows
     signals = find_butterfly_patterns(df)
     
-    # Backtest với 2 exit strategies
     results_9, final_balance_9 = calculate_backtest_results(df, signals, EXIT_PERIODS_1)
     results_26, final_balance_26 = calculate_backtest_results(df, signals, EXIT_PERIODS_2)
     
-    # Xuất báo cáo
     report_file = export_butterfly_comparison_report(signals, results_9, results_26, final_balance_9, final_balance_26)
     print(f"Đã xuất báo cáo: {report_file}")
     
-    # In kết quả tóm tắt
     print(f"\n=== KẾT QUẢ TÓM TẮT ===")
     print(f"Tổng số tín hiệu: {len(signals)}")
     print(f"Strategy 1 ({EXIT_PERIODS_1} periods): {len(results_9)} trades, ${final_balance_9:.2f}")
