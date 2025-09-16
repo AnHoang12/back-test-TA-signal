@@ -22,21 +22,21 @@ DATABASE_URL = (
 LOOKBACK_PERIOD = 40
 
 try:
-    print(f"🔗 Kết nối DB: {DB_HOST}:{DB_PORT}/{DB_NAME}")
+    print(f"Connecting to DB: {DB_HOST}:{DB_PORT}/{DB_NAME}")
     engine = create_engine(DATABASE_URL)
-    print("✅ Kết nối DB thành công")
+    print("Connected to DB successfully")
 except Exception as e:
     engine = None
-    print(f"❌ Không tạo được kết nối DB: {e}")
+    print(f"Failed to connect to DB: {e}")
 
 # --- Hàm đọc data từ Database ---
 def get_binance_data(symbol, interval):
     """
 
     """
-    print(f"📊 Lấy dữ liệu từ DB: {symbol} {interval}")
+    print(f"Getting data from DB: {symbol} {interval}")
     if engine is None:
-        print("❌ Chưa có kết nối DB hợp lệ.")
+        print("No valid DB connection.")
         return pd.DataFrame()
 
     table_name =  "proddb.coin_prices_1h"
@@ -51,7 +51,7 @@ def get_binance_data(symbol, interval):
     """
 
     try:
-        print(f"🔍 Query {table_name}")
+        print(f"Query {table_name}")
         df = pd.read_sql(
             query,
             con=engine,
@@ -61,26 +61,26 @@ def get_binance_data(symbol, interval):
         )
 
         if 'open_time' not in df.columns:
-            print("❌ Thiếu cột 'open_time' trong dữ liệu trả về từ DB.")
+            print("Missing 'open_time' column in data returned from DB.")
             print(f"   Columns: {list(df.columns)}")
             return pd.DataFrame()
 
         required_cols = {'open', 'high', 'low', 'close'}
         if not required_cols.issubset(df.columns):
-            print(f"❌ Thiếu cột cần thiết: {required_cols - set(df.columns)}")
+            print(f"Missing required columns: {required_cols - set(df.columns)}")
             return pd.DataFrame()
 
         df['datetime'] = pd.to_datetime(df['open_time'], unit='s')
         df = df.sort_values('datetime').reset_index(drop=True)
 
-        print(f"✅ Đã đọc {len(df)} dòng từ DB bảng {table_name}")
+        print(f"Read {len(df)} rows from DB table {table_name}")
         if len(df) > 0:
-            print(f"   Thời gian: {df['datetime'].min()} đến {df['datetime'].max()}")
-            print(f"   Giá cuối: ${df.iloc[-1]['close']:.4f}")
+            print(f"   Time: {df['datetime'].min()} to {df['datetime'].max()}")
+            print(f"   Last price: ${df.iloc[-1]['close']:.4f}")
 
         return df
     except Exception as e:
-        print(f"❌ Lỗi khi đọc dữ liệu từ DB: {e}")
+        print(f"Error reading data from DB: {e}")
         return pd.DataFrame()
 
 def find_pivots(data, window=5):
@@ -95,21 +95,34 @@ def find_pivots(data, window=5):
             pivot_lows.append((i, lows[i]))
     return pivot_highs, pivot_lows
 
-def detect_swing_points(df, window=3):
-    """Detect swing highs and lows"""
+def detect_swing_points(df, window=3, detect_current=True):
+    """Detect swing highs and lows.
+
+    If detect_current is True, detect potential swing points for the latest candles
+    without requiring future candles by comparing only with previous candles.
+    """
     df = df.copy()
     df['swing_high'] = False
     df['swing_low'] = False
-    
+
+    # Original logic: requires both past and future candles
     for i in range(window, len(df) - window):
-        # Swing high: highest point in the window
         if df.loc[i, 'high'] == df.loc[i-window:i+window, 'high'].max():
             df.loc[i, 'swing_high'] = True
-        
-        # Swing low: lowest point in the window
         if df.loc[i, 'low'] == df.loc[i-window:i+window, 'low'].min():
             df.loc[i, 'swing_low'] = True
-    
+
+    # Real-time extension: evaluate last candles using only historical lookback
+    if detect_current and len(df) > 0:
+        # Evaluate from the first index where original loop stops to the end
+        start_idx = max(window, len(df) - window)
+        for i in range(start_idx, len(df)):
+            lookback_start = max(0, i - window * 2)
+            if df.loc[i, 'high'] == df.loc[lookback_start:i+1, 'high'].max():
+                df.loc[i, 'swing_high'] = True
+            if df.loc[i, 'low'] == df.loc[lookback_start:i+1, 'low'].min():
+                df.loc[i, 'swing_low'] = True
+
     return df
 
 def is_within_tolerance(actual, expected, tolerance=0.15):
@@ -118,26 +131,26 @@ def is_within_tolerance(actual, expected, tolerance=0.15):
 
 def find_butterfly_patterns(df, max_pattern_length=72):
     """
-    Tìm Butterfly Pattern theo cách 2 với swing points và tolerance cao hơn:
+    Find Butterfly Pattern using method 2 with swing points and higher tolerance:
+    --------------------------------
+    Bullish Butterfly Pattern:
+    Structure: X(low) → A(high) → B(low) → C(high) → D(low - entry point)
+    Fibonacci ratios with tolerance 15-25%:
+    - AB = 0.786 of XA
+    - BC = 0.382 or 0.886 of AB  
+    - CD = 1.27 or 1.618 of BC
+    - AD = 0.786 of XA
     
-    🟢 Bullish Butterfly Pattern:
-    Cấu trúc: X(low) → A(high) → B(low) → C(high) → D(low - entry point)
-    Tỷ lệ Fibonacci với tolerance 15-25%:
-    - AB = 0.786 của XA
-    - BC = 0.382 hoặc 0.886 của AB  
-    - CD = 1.27 hoặc 1.618 của BC
-    - AD = 0.786 của XA
-    
-    🔴 Bearish Butterfly Pattern:
-    Cấu trúc: X(high) → A(low) → B(high) → C(low) → D(high - entry point)
+    Bearish Butterfly Pattern:
+    Structure: X(high) → A(low) → B(high) → C(low) → D(high - entry point)
     """
     signals = []
     
-    # Detect swing points
-    df = detect_swing_points(df, window=3)
+    # Detect swing points (allow current-candle detection)
+    df = detect_swing_points(df, window=3, detect_current=True)
     
-    # Tìm Bullish Butterfly Pattern
-    for i in range(15, len(df)):  # Bắt đầu từ index 15 như cách 2
+    # Find Bullish Butterfly Pattern
+    for i in range(15, len(df)):  # Start from index 15 like method 2
         if i < 15:
             continue
             
@@ -174,13 +187,13 @@ def find_butterfly_patterns(df, max_pattern_length=72):
             if XA == 0 or AB == 0 or BC == 0:
                 continue 
 
-            # Check Fibonacci ratios với tolerance cao hơn
+            # Check Fibonacci ratios with higher tolerance
             AB_XA_ratio = AB / XA
             BC_AB_ratio = BC / AB
             CD_BC_ratio = CD / BC if BC > 0 else 0
             AD_XA_ratio = AD / XA
             
-            # Butterfly pattern ratios với tolerance 15-25%
+            # Butterfly pattern ratios with tolerance 15-25%
             valid_AB = is_within_tolerance(AB_XA_ratio, 0.786, 0.2)
             valid_BC = (is_within_tolerance(BC_AB_ratio, 0.382, 0.2) or 
                        is_within_tolerance(BC_AB_ratio, 0.886, 0.2))
@@ -210,7 +223,7 @@ def find_butterfly_patterns(df, max_pattern_length=72):
         except Exception as e:
             continue
     
-    # Tìm Bearish Butterfly Pattern
+    # Find Bearish Butterfly Pattern
     for i in range(15, len(df)):
         if i < 15:
             continue
@@ -283,23 +296,23 @@ def find_butterfly_patterns(df, max_pattern_length=72):
 
 def predict_price_with_accuracy(df, signal_func=None, direction='up', lookback=LOOKBACK_PERIOD, precomputed_signals=None):
     """
-    Dự đoán giá tiếp theo dựa trên chỉ báo với tỉ lệ chính xác cải tiến.
+    Predict next price based on indicator with improved accuracy.
     
     Args:
-        df: DataFrame chứa dữ liệu giá
-        signal_func: Hàm kiểm tra tín hiệu (should_buy hoặc should_sell)
-        direction: 'up' cho tín hiệu mua, 'down' cho tín hiệu bán
-        lookback: Số nến lookback tối thiểu
+        df: DataFrame containing price data
+        signal_func: Function to check signal (should_buy or should_sell)
+        direction: 'up' for buy signal, 'down' for sell signal
+        lookback: Minimum lookback period
     """
     if len(df) < lookback + 1:
         return None, 0, 0, 0
 
     direction = direction.lower()
 
-    # Tối ưu: tiền xử lý danh sách tín hiệu để tra cứu O(1) theo entry_idx
+    # Optimize: preprocess signal list for O(1) lookup by entry_idx
     signals_list = precomputed_signals
     if signals_list is None:
-        # Fallback: vẫn hỗ trợ gọi hàm, nhưng chi phí cao hơn
+        # Fallback: still support calling function, but more expensive
         signals_list = signal_func(df) if signal_func is not None else []
 
     signals_by_entry = {}
@@ -307,13 +320,13 @@ def predict_price_with_accuracy(df, signal_func=None, direction='up', lookback=L
         idx = s.get('entry_idx')
         if idx is None:
             continue
-        # Nếu có nhiều tín hiệu trùng entry_idx, ưu tiên tín hiệu cuối cùng (gần hiện tại hơn)
+        # If there are multiple signals with the same entry_idx, prioritize the last one (closer to current)
         signals_by_entry[idx] = s
 
     actual_changes = []  # only changes for signals matching desired direction
     price_changes_when_correct = []
 
-    for i in range(lookback, len(df) - 1):  # -1 để còn nến tiếp theo để kiểm tra
+    for i in range(lookback, len(df) - 1):  # -1 to leave room for next candle to check
         entry_at_next = i + 1
         sig = signals_by_entry.get(entry_at_next)
         if not sig:
@@ -340,7 +353,7 @@ def predict_price_with_accuracy(df, signal_func=None, direction='up', lookback=L
     if not actual_changes:
         return None, 0, 0, 0
 
-    # Tính số lần đúng và tỉ lệ chính xác
+    # Calculate number of correct and accuracy
     if direction == 'up':
         correct = sum(1 for chg in actual_changes if chg > 0)
     else:
@@ -349,7 +362,7 @@ def predict_price_with_accuracy(df, signal_func=None, direction='up', lookback=L
     total_signals = len(actual_changes)
     accuracy = correct / total_signals * 100 if total_signals > 0 else 0
 
-    # Giá dự đoán = trung bình các lần tăng/giảm thực sự (chỉ lấy các lần đúng)
+    # Predicted price = average of actual increases/decreases (only take correct ones)
     if price_changes_when_correct:
         avg_change = float(np.mean(price_changes_when_correct))
         last_price = df.iloc[-1]['close']
@@ -360,11 +373,11 @@ def predict_price_with_accuracy(df, signal_func=None, direction='up', lookback=L
     return predicted_price, accuracy, total_signals, correct
 
 def evaluate_signal_performance(df, signals, direction, horizon):
-    """Đánh giá hiệu suất tín hiệu theo horizon (số phiên sau entry).
+    """Evaluate signal performance by horizon (number of candles after entry).
 
     Trả về: (avg_signed_change, accuracy_percent, total_samples, correct)
-    - avg_signed_change: trung bình thay đổi giá sau horizon kể từ entry (có dấu)
-    - accuracy: % số lần đúng hướng (tăng cho LONG, giảm cho SHORT)
+    - avg_signed_change: average price change after horizon from entry (signed)
+    - accuracy: % number of correct directions (increase for LONG, decrease for SHORT)
     """
     if df.empty:
         return 0.0, 0.0, 0, 0
@@ -372,7 +385,7 @@ def evaluate_signal_performance(df, signals, direction, horizon):
     direction = direction.lower()
     last_index = len(df) - 1
 
-    # Lọc tín hiệu theo hướng và đủ dữ liệu để đánh giá
+    # Filter signals by direction and enough data to evaluate
     filtered = [s for s in signals if (
         (direction == 'up' and s.get('direction') == 'LONG') or
         (direction == 'down' and s.get('direction') == 'SHORT')
@@ -396,11 +409,11 @@ def evaluate_signal_performance(df, signals, direction, horizon):
     return avg_signed_change, accuracy, total, correct
 
 def evaluate_signal_performance_percent(df, signals, direction, horizon):
-    """Đánh giá hiệu suất tín hiệu (theo %) sau horizon phiên.
+    """Evaluate signal performance (%) by horizon.
 
     Trả về: (avg_correct_change_percent, accuracy_percent, total_samples, correct)
-    - avg_correct_change_percent: trung bình % thay đổi khi DỰ ĐOÁN ĐÚNG
-    - accuracy: % số lần đúng hướng
+    - avg_correct_change_percent: average % change when PREDICTED CORRECTLY
+    - accuracy: % number of correct directions
     """
     if df.empty:
         return 0.0, 0.0, 0, 0
@@ -435,54 +448,54 @@ def evaluate_signal_performance_percent(df, signals, direction, horizon):
     return avg_correct_change_percent, accuracy, total, correct
 
 def main():
-    symbol = "SOLUSDT"
+    symbol = "BNBUSDT"
     interval = "1h"
 
-    print(f"Đang lấy dữ liệu {symbol}...")
+    print(f"Getting data {symbol}...")
     df = get_binance_data(symbol, interval)
 
     if df.empty:
-        print("❌ Không có dữ liệu. Kiểm tra kết nối database.")
+        print("No data. Check database connection.")
         return
 
-    print(f"✅ Đã có {len(df)} nến dữ liệu\n")
+    print(f"  {len(df)} candles data\n")
 
     print("=== KHỞI ĐỘNG PHÂN TÍCH DỰ ĐOÁN GIÁ ===")
 
-    print(f"Đang tìm Butterfly Pattern...")
+    print(f"Finding Butterfly Pattern...")
     signals = find_butterfly_patterns(df)
 
     if not signals:
-        print("❌ Không tìm thấy Butterfly Pattern.")
+        print("No Butterfly Pattern found.")
         return
 
-    print(f"✅ Đã tìm thấy {len(signals)} Butterfly Pattern")
+    print(f"✅ Found {len(signals)} Butterfly Pattern")
 
     print("\n=== PHÂN TÍCH TÍN HIỆU ===")
     
-    # Dự đoán cho tín hiệu tăng (Bullish)
+    # Predict for buy signal (Bullish)
     bullish_pred_price, bullish_acc, bullish_total, bullish_correct = \
         predict_price_with_accuracy(df, direction='up', precomputed_signals=signals)
 
-    # Dự đoán cho tín hiệu giảm (Bearish)
+    # Predict for sell signal (Bearish)
     bearish_pred_price, bearish_acc, bearish_total, bearish_correct = \
         predict_price_with_accuracy(df, direction='down', precomputed_signals=signals)
 
     last_close = df.iloc[-1]['close'] if not df.empty else None
 
-    # Xác định có tín hiệu hiện tại (tại nến kế tiếp entry_idx == len(df)-1)
+    # Check if there is a current signal (at the next candle entry_idx == len(df)-1)
     current_index = len(df) - 1
     current_signal = None
     if signals:
-        # lấy tín hiệu có entry_idx == current_index
+        # get signal with entry_idx == current_index
         for s in reversed(signals):
             if s.get('entry_idx') == current_index:
                 current_signal = s
                 break
 
     if not current_signal:
-        print("\n⏳ Hiện tại KHÔNG có tín hiệu mới → Không đưa ra dự đoán.")
-        # Hiển thị thống kê lịch sử theo ví dụ yêu cầu
+        print("\nNo new signal → No prediction.")
+        # Show history statistics as requested
         for dir_label, dir_key in (("Bullish (LONG)", 'up'), ("Bearish (SHORT)", 'down')):
             print(f"\n🔹 {dir_label}:")
             for horizon in (9, 26):
@@ -490,16 +503,16 @@ def main():
                     df, signals, dir_key, horizon
                 )
                 print(
-                    f"   - Sau {horizon} phiên: Độ chính xác {acc:.2f}% ({correct}/{total}), "
-                    f"Trung bình thay đổi khi đúng: {avg_correct_pct:.4f}%"
-                )
+                    f"   - After {horizon} sessions: Accuracy {acc:.2f}% ({correct}/{total}), "
+                    f"Average change when correct: {avg_correct_pct:.4f}%"
+                )   
     else:
         sig_dir = current_signal.get('direction')
-        print("\n✅ Có tín hiệu hiện tại:")
-        print(f"   Loại: {current_signal.get('type')} | Hướng: {sig_dir} | Entry time: {current_signal.get('entry_time')}")
+        print("\n  Current signal found:")
+        print(f"   Type: {current_signal.get('type')} | Direction: {sig_dir} | Entry time: {current_signal.get('entry_time')}")
         print(f"   Entry price: ${current_signal.get('entry_price'):.4f}")
 
-        # Đánh giá lịch sử theo horizon 9 và 26 phiên
+        # Evaluate history by horizon 9 and 26 sessions
         for horizon in (9, 26):
             avg_change, acc, total, correct = evaluate_signal_performance(
                 df, signals, 'up' if sig_dir == 'LONG' else 'down', horizon
@@ -507,7 +520,7 @@ def main():
             if last_close is not None:
                 predicted_price = last_close + avg_change if sig_dir == 'LONG' else last_close - abs(avg_change)
                 change_pct = (predicted_price - last_close) / last_close * 100
-                print(f"   ▶ Dự đoán sau {horizon} phiên: ${predicted_price:.4f} ({change_pct:+.2f}%) | Độ chính xác lịch sử: {acc:.1f}% ({correct}/{total})")
+                print(f"   Prediction after {horizon} sessions: ${predicted_price:.4f} ({change_pct:+.2f}%) | History accuracy: {acc:.1f}% ({correct}/{total})")
 
 if __name__ == "__main__":
     main()
