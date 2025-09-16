@@ -129,7 +129,7 @@ def is_within_tolerance(actual, expected, tolerance=0.15):
     """Check if actual value is within tolerance of expected Fibonacci ratio"""
     return abs(actual - expected) / expected <= tolerance
 
-def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
+def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True, min_bars_between_signals=1):
     """
     Find Butterfly Pattern using method 2 with swing points and higher tolerance:
     --------------------------------
@@ -145,6 +145,11 @@ def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
     Structure: X(high) → A(low) → B(high) → C(low) → D(high - entry point)
     """
     signals = []
+    seen_entries = set()  # (entry_idx, type)
+    last_c_index_by_type = {
+        'Bullish Butterfly': None,
+        'Bearish Butterfly': None,
+    }
     
     # Detect swing points (allow current-candle detection)
     df = detect_swing_points(df, window=3, detect_current=True)
@@ -204,6 +209,18 @@ def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
             if valid_AB and valid_BC and valid_CD and valid_AD:
                 entry_idx = i if entry_on_current else i + 1
                 if entry_idx < len(df):
+                    # De-duplicate: only one signal per C swing index for this pattern type
+                    c_idx = int(C.name) if hasattr(C, 'name') else None
+                    if c_idx is not None and last_c_index_by_type['Bullish Butterfly'] == c_idx:
+                        continue
+                    key = (entry_idx, 'Bullish Butterfly')
+                    # Deduplicate by entry index and type, and enforce cooldown
+                    if key in seen_entries:
+                        continue
+                    if signals and signals[-1].get('type') == 'Bullish Butterfly' and \
+                       entry_idx - signals[-1].get('entry_idx', -10) < min_bars_between_signals:
+                        continue
+                    seen_entries.add(key)
                     entry_price = df.iloc[entry_idx]['close']
                     signals.append({
                         'type': 'Bullish Butterfly',
@@ -219,6 +236,8 @@ def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
                             'AD/XA': AD_XA_ratio
                         }
                     })
+                    if c_idx is not None:
+                        last_c_index_by_type['Bullish Butterfly'] = c_idx
         
         except Exception as e:
             continue
@@ -273,6 +292,18 @@ def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
             if valid_AB and valid_BC and valid_CD and valid_AD:
                 entry_idx = i if entry_on_current else i + 1
                 if entry_idx < len(df):
+                    # De-duplicate: only one signal per C swing index for this pattern type
+                    c_idx = int(C.name) if hasattr(C, 'name') else None
+                    if c_idx is not None and last_c_index_by_type['Bearish Butterfly'] == c_idx:
+                        continue
+                    key = (entry_idx, 'Bearish Butterfly')
+                    # Deduplicate by entry index and type, and enforce cooldown
+                    if key in seen_entries:
+                        continue
+                    if signals and signals[-1].get('type') == 'Bearish Butterfly' and \
+                       entry_idx - signals[-1].get('entry_idx', -10) < min_bars_between_signals:
+                        continue
+                    seen_entries.add(key)
                     entry_price = df.iloc[entry_idx]['close']
                     signals.append({
                         'type': 'Bearish Butterfly',
@@ -288,6 +319,8 @@ def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
                             'AD/XA': AD_XA_ratio
                         }
                     })
+                    if c_idx is not None:
+                        last_c_index_by_type['Bearish Butterfly'] = c_idx
         
         except Exception as e:
             continue
@@ -470,18 +503,18 @@ def main():
     if df.empty:
         print("No data. Check database connection.")
         return
-
+    print(df.head(), df.tail())
     print(f"  {len(df)} candles data\n")
 
     print("=== STARTING PRICE PREDICTION ANALYSIS ===")
 
     print(f"Finding Butterfly Pattern...")
-    signals = find_butterfly_patterns(df, entry_on_current=True)
+    signals = find_butterfly_patterns(df, entry_on_current=True, min_bars_between_signals=1)
 
     if not signals:
         print("No Butterfly Pattern found.")
         return
-
+    print(signals)
     print(f" Found {len(signals)} Butterfly Pattern")
     print_signals_list(signals)
 
