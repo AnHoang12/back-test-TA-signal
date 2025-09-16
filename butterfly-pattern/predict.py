@@ -129,7 +129,7 @@ def is_within_tolerance(actual, expected, tolerance=0.15):
     """Check if actual value is within tolerance of expected Fibonacci ratio"""
     return abs(actual - expected) / expected <= tolerance
 
-def find_butterfly_patterns(df, max_pattern_length=72):
+def find_butterfly_patterns(df, max_pattern_length=72, entry_on_current=True):
     """
     Find Butterfly Pattern using method 2 with swing points and higher tolerance:
     --------------------------------
@@ -202,7 +202,7 @@ def find_butterfly_patterns(df, max_pattern_length=72):
             valid_AD = is_within_tolerance(AD_XA_ratio, 0.786, 0.2)
             
             if valid_AB and valid_BC and valid_CD and valid_AD:
-                entry_idx = i + 1
+                entry_idx = i if entry_on_current else i + 1
                 if entry_idx < len(df):
                     entry_price = df.iloc[entry_idx]['close']
                     signals.append({
@@ -271,7 +271,7 @@ def find_butterfly_patterns(df, max_pattern_length=72):
             valid_AD = is_within_tolerance(AD_XA_ratio, 0.786, 0.2)
             
             if valid_AB and valid_BC and valid_CD and valid_AD:
-                entry_idx = i + 1
+                entry_idx = i if entry_on_current else i + 1
                 if entry_idx < len(df):
                     entry_price = df.iloc[entry_idx]['close']
                     signals.append({
@@ -293,6 +293,19 @@ def find_butterfly_patterns(df, max_pattern_length=72):
             continue
     
     return signals
+
+def print_signals_list(signals):
+    if not signals:
+        print("\nNo signals to list.")
+        return
+    print("\n=== DANH SÁCH PHIÊN DỰ ĐOÁN ===")
+    for s in signals:
+        et = s.get('entry_time')
+        et_str = et.strftime('%Y-%m-%d %H:%M') if hasattr(et, 'strftime') else str(et)
+        print(
+            f" - {et_str} | {s.get('type')} | {s.get('direction')} | "
+            f"Entry idx: {s.get('entry_idx')} | Entry price: ${s.get('entry_price'):.4f}"
+        )
 
 def predict_price_with_accuracy(df, signal_func=None, direction='up', lookback=LOOKBACK_PERIOD, precomputed_signals=None):
     """
@@ -448,7 +461,7 @@ def evaluate_signal_performance_percent(df, signals, direction, horizon):
     return avg_correct_change_percent, accuracy, total, correct
 
 def main():
-    symbol = "BNBUSDT"
+    symbol = "ETHUSDT"
     interval = "1h"
 
     print(f"Getting data {symbol}...")
@@ -460,18 +473,19 @@ def main():
 
     print(f"  {len(df)} candles data\n")
 
-    print("=== KHỞI ĐỘNG PHÂN TÍCH DỰ ĐOÁN GIÁ ===")
+    print("=== STARTING PRICE PREDICTION ANALYSIS ===")
 
     print(f"Finding Butterfly Pattern...")
-    signals = find_butterfly_patterns(df)
+    signals = find_butterfly_patterns(df, entry_on_current=True)
 
     if not signals:
         print("No Butterfly Pattern found.")
         return
 
-    print(f"✅ Found {len(signals)} Butterfly Pattern")
+    print(f" Found {len(signals)} Butterfly Pattern")
+    print_signals_list(signals)
 
-    print("\n=== PHÂN TÍCH TÍN HIỆU ===")
+    print("\n=== SIGNAL ANALYSIS ===")
     
     # Predict for buy signal (Bullish)
     bullish_pred_price, bullish_acc, bullish_total, bullish_correct = \
