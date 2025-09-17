@@ -81,11 +81,12 @@ def get_binance_data(symbol, interval):
         return pd.DataFrame()
 
 def detect_triple_top(df, lookback_period=LOOKBACK_PERIOD, price_threshold=PRICE_THRESHOLD):
-    """Detect triple top pattern"""
+    """Detect triple top pattern - causal version (no future data)"""
     if len(df) < lookback_period:
         return False, None, None
     
-    window = df.tail(lookback_period)
+    # Chỉ sử dụng dữ liệu quá khứ, không bao gồm nến hiện tại
+    window = df.iloc[-lookback_period:-1] if len(df) > lookback_period else df.iloc[:-1]
     highs = window['high']
     
     if highs.empty:
@@ -120,11 +121,12 @@ def detect_triple_top(df, lookback_period=LOOKBACK_PERIOD, price_threshold=PRICE
     return True, support_level, resistance_level
 
 def detect_triple_bottom(df, lookback_period=LOOKBACK_PERIOD, price_threshold=PRICE_THRESHOLD):
-    """Detect triple bottom pattern"""
+    """Detect triple bottom pattern - causal version (no future data)"""
     if len(df) < lookback_period:
         return False, None, None
     
-    window = df.tail(lookback_period)
+    # Chỉ sử dụng dữ liệu quá khứ, không bao gồm nến hiện tại
+    window = df.iloc[-lookback_period:-1] if len(df) > lookback_period else df.iloc[:-1]
     lows = window['low']
     
     if lows.empty:
