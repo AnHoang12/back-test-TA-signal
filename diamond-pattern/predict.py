@@ -97,28 +97,62 @@ def calculate_atr(data, period=14):
     return true_range.rolling(window=period).mean()
 
 
-def find_enhanced_pivots(data, base_window=3, atr_multiplier=2.0, min_distance_multiplier=1.5):
+def find_enhanced_pivots(data, base_window=3, atr_multiplier=2.0, min_distance_multiplier=1.5, real_time_mode=False):
+    """
+    Tìm pivot points với 2 chế độ:
+    - real_time_mode=False: Dùng cho backtest, cần window đầy đủ
+    - real_time_mode=True: Dùng cho real-time, chỉ cần 3 nến trước
+    """
     atr = calculate_atr(data)
     avg_price = (data['high'] + data['low'] + data['close']) / 3
     pivot_highs, pivot_lows = [], []
-    for i in range(14, len(data) - base_window):
+    
+    if real_time_mode:
+        # Real-time mode: chỉ cần 3 nến trước, có thể detect ở nến cuối
+        start_idx = 14
+        end_idx = len(data)  # Có thể detect đến nến cuối cùng
+    else:
+        # Backtest mode: cần window đầy đủ
+        start_idx = 14
+        end_idx = len(data) - base_window
+    
+    for i in range(start_idx, end_idx):
         current_atr = atr.iloc[i]
         current_avg_price = avg_price.iloc[i]
+        
         if pd.notna(current_atr) and current_avg_price > 0:
             adaptive_factor = (current_atr / current_avg_price) * atr_multiplier
             window = max(base_window, min(8, int(base_window + adaptive_factor * 10)))
         else:
             window = base_window
-        if i < window or i >= len(data) - window:
-            continue
-        highs = data['high'].iloc[i-window:i+window+1]
-        if data['high'].iloc[i] == highs.max():
-            if (data['high'].iloc[i] > data['high'].iloc[i-1] and data['high'].iloc[i] > data['high'].iloc[i+1]):
+            
+        if real_time_mode:
+            # Real-time: chỉ cần 3 nến trước để xác định pivot
+            if i < 3:
+                continue
+            # Kiểm tra pivot high
+            if (data['high'].iloc[i] > data['high'].iloc[i-1] and 
+                data['high'].iloc[i] > data['high'].iloc[i-2] and
+                data['high'].iloc[i] > data['high'].iloc[i-3]):
                 pivot_highs.append((i, data['high'].iloc[i]))
-        lows = data['low'].iloc[i-window:i+window+1]
-        if data['low'].iloc[i] == lows.min():
-            if (data['low'].iloc[i] < data['low'].iloc[i-1] and data['low'].iloc[i] < data['low'].iloc[i+1]):
+            # Kiểm tra pivot low  
+            if (data['low'].iloc[i] < data['low'].iloc[i-1] and 
+                data['low'].iloc[i] < data['low'].iloc[i-2] and
+                data['low'].iloc[i] < data['low'].iloc[i-3]):
                 pivot_lows.append((i, data['low'].iloc[i]))
+        else:
+            # Backtest: cần window đầy đủ
+            if i < window or i >= len(data) - window:
+                continue
+            highs = data['high'].iloc[i-window:i+window+1]
+            if data['high'].iloc[i] == highs.max():
+                if (data['high'].iloc[i] > data['high'].iloc[i-1] and data['high'].iloc[i] > data['high'].iloc[i+1]):
+                    pivot_highs.append((i, data['high'].iloc[i]))
+            lows = data['low'].iloc[i-window:i+window+1]
+            if data['low'].iloc[i] == lows.min():
+                if (data['low'].iloc[i] < data['low'].iloc[i-1] and data['low'].iloc[i] < data['low'].iloc[i+1]):
+                    pivot_lows.append((i, data['low'].iloc[i]))
+    
     pivot_highs = _filter_close_pivots(pivot_highs, atr, data, min_distance_multiplier)
     pivot_lows = _filter_close_pivots(pivot_lows, atr, data, min_distance_multiplier)
     return pivot_highs, pivot_lows
@@ -224,24 +258,38 @@ def check_volume_confirmation(df, signal_idx, volume_period=20):
 
 def find_diamond_signals(df, use_rsi_filter=False, rsi_oversold=30, rsi_overbought=70, rsi_column='rsi14',
                          use_volume_filter=True, use_trendline_validation=True, min_consistency=0.6,
-                         max_pattern_length=72):
+                         max_pattern_length=72, real_time_mode=False):
+    """
+    Tìm Diamond pattern signals với 2 chế độ:
+    - real_time_mode=False: Dùng cho backtest, cần entry sau pattern hoàn thành
+    - real_time_mode=True: Dùng cho real-time, entry ngay khi pattern hoàn thành
+    """
     signals = []
-    pivot_highs, pivot_lows = find_enhanced_pivots(df)
+    pivot_highs, pivot_lows = find_enhanced_pivots(df, real_time_mode=real_time_mode)
     all_pivots = []
     for idx, price in pivot_highs:
         all_pivots.append((idx, price, 'high'))
     for idx, price in pivot_lows:
         all_pivots.append((idx, price, 'low'))
     all_pivots.sort(key=lambda x: x[0])
+    
     for i in range(len(all_pivots) - 4):
         p1, p2, p3, p4, p5 = all_pivots[i:i+5]
         pattern_length = p5[0] - p1[0]
         if pattern_length > max_pattern_length:
             continue
-        signal_idx = p5[0] + 1
-        if signal_idx >= len(df):
-            continue
-        entry_price = df.iloc[signal_idx]['close']
+            
+        if real_time_mode:
+            # Real-time: entry ngay tại nến cuối của pattern (p5)
+            signal_idx = p5[0]
+            entry_price = df.iloc[signal_idx]['close']
+        else:
+            # Backtest: entry sau pattern hoàn thành
+            signal_idx = p5[0] + 1
+            if signal_idx >= len(df):
+                continue
+            entry_price = df.iloc[signal_idx]['close']
+            
         # Bottom (BUY)
         if (p1[2]=='high' and p2[2]=='low' and p3[2]=='high' and p4[2]=='low' and p5[2]=='high'):
             if not validate_diamond_shape([p1,p2,p3,p4,p5], 'bottom'):
@@ -354,6 +402,18 @@ def evaluate_signal_performance_percent(df, signals, direction, horizon):
     return avg_correct_change_percent, accuracy, total, correct
 
 
+def print_all_signals(signals):
+    """In danh sách tất cả signals đã phát hiện"""
+    if not signals:
+        print("Khong co signal nao.")
+        return
+    
+    print(f"\n=== DANH SACH TAT CA DIAMOND SIGNALS ({len(signals)} signals) ===")
+    for i, signal in enumerate(signals, 1):
+        print(f"{i:2d}. {signal['type']:<15} | {signal['direction']:<5} | "
+              f"Entry: {signal['entry_time']} | Price: ${signal['entry_price']:.4f}")
+
+
 def main():
     symbol = "XRPUSDT"
     interval = "1h"
@@ -366,16 +426,24 @@ def main():
     print(f"Da co {len(df)} nen du lieu\n")
 
     print("=== DIAMOND PREDICT ===")
-    print("Tim Diamond Pattern...")
-    signals = find_diamond_signals(df)
-    if not signals:
-        print("Khong tim thay Diamond Pattern.")
-        return
-    print(f"Tim thay {len(signals)} Diamond Pattern")
-
+    
+    # 1. Tìm signals cho backtest (để thống kê)
+    print("Tim Diamond Pattern cho backtest...")
+    backtest_signals = find_diamond_signals(df, real_time_mode=False)
+    print(f"Tim thay {len(backtest_signals)} Diamond Pattern trong lich su")
+    
+    # 2. Tìm signals cho real-time (có thể detect ở nến cuối)
+    print("\nTim Diamond Pattern cho real-time...")
+    realtime_signals = find_diamond_signals(df, real_time_mode=True)
+    print(f"Tim thay {len(realtime_signals)} Diamond Pattern (bao gom real-time)")
+    
+    # 3. In danh sách tất cả signals
+    print_all_signals(realtime_signals)
+    
+    # 4. Kiểm tra signal hiện tại
     current_index = len(df) - 1
     current_signal = None
-    for s in reversed(signals):
+    for s in reversed(realtime_signals):
         if s.get('entry_idx') == current_index:
             current_signal = s
             break
@@ -386,7 +454,7 @@ def main():
             print(f"\n{dir_label}:")
             for horizon in (9, 26):
                 avg_correct_pct, acc, total, correct = evaluate_signal_performance_percent(
-                    df, signals, dir_key, horizon
+                    df, backtest_signals, dir_key, horizon
                 )
                 print(
                     f"   - Sau {horizon} phien: Do chinh xac {acc:.2f}% ({correct}/{total}), "
@@ -400,7 +468,7 @@ def main():
         last_close = df.iloc[-1]['close']
         for horizon in (9, 26):
             avg_change, acc, total, correct = evaluate_signal_performance(
-                df, signals, 'up' if sig_dir == 'LONG' else 'down', horizon
+                df, backtest_signals, 'up' if sig_dir == 'LONG' else 'down', horizon
             )
             predicted_price = last_close + avg_change if sig_dir == 'LONG' else last_close - abs(avg_change)
             change_pct = (predicted_price - last_close) / last_close * 100
